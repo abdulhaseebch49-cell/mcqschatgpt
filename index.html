@@ -120,24 +120,27 @@ const drop = $('drop');
 }));
 drop.addEventListener('drop', event => addFiles(event.dataTransfer.files));
 
-const QUESTION_SCHEMA = JSON.stringify({
+const QUIZ_SCHEMA = JSON.stringify({
   type: 'object',
   properties: {
-    question: {type: 'string'},
-    explanation: {type: 'string'},
-    answer: {type: 'string'},
-    distractors: {type: 'array', items: {type: 'string'}, minItems: 3, maxItems: 3},
-    source: {type: 'integer'},
-    topic: {type: 'string'}
+    questions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          question: {type: 'string'},
+          explanation: {type: 'string'},
+          answer: {type: 'string'},
+          distractors: {type: 'array', items: {type: 'string'}, minItems: 3, maxItems: 3},
+          source: {type: 'integer'},
+          topic: {type: 'string'}
+        },
+        required: ['question', 'explanation', 'answer', 'distractors', 'source', 'topic'],
+        additionalProperties: false
+      }
+    }
   },
-  required: ['question', 'answer', 'distractors', 'explanation', 'source', 'topic'],
-  additionalProperties: false
-});
-
-const REVIEW_SCHEMA = JSON.stringify({
-  type: 'object',
-  properties: {explanation: {type: 'string'}, answer: {type: 'string'}},
-  required: ['explanation', 'answer'],
+  required: ['questions'],
   additionalProperties: false
 });
 
@@ -178,26 +181,26 @@ async function generateQuestions() {
   $('generateBtn').textContent = '✦ Generating MCQs…';
   $('buildStatus').textContent = 'Loading the on-device AI…';
   try {
-    const {generateQuiz} = await import('./quiz-engine.mjs');
+    const {generateQuiz} = await import('./quiz-engine.mjs?v=2');
     const generator = await getLocalGenerator();
     if (!generator) return;
     const generated = await generateQuiz({
       pages: documents.flatMap(document => document.contentPages),
       subject, chapter, mode, count,
-      async complete(messages, maxTokens, purpose) {
+      async complete(messages, maxTokens) {
         const result = await generator.chat.completions.create({
           messages,
           max_tokens: maxTokens,
-          temperature: 0,
+          temperature: 0.35,
           enable_thinking: false,
-          response_format: {type: 'json_object', schema: purpose === 'review' ? REVIEW_SCHEMA : QUESTION_SCHEMA}
+          response_format: {type: 'json_object', schema: QUIZ_SCHEMA}
         });
         const text = result.choices[0]?.message.content;
         if (typeof text !== 'string') throw new Error('The model returned no text.');
         return text;
       },
-      onProgress({completed, requested}) {
-        $('buildStatus').textContent = `Writing and checking MCQs · ${completed}/${requested} ready…`;
+      onProgress({completed, requested, attempt}) {
+        $('buildStatus').textContent = `Writing batch ${attempt} · ${completed}/${requested} MCQs ready…`;
       }
     });
     if (!generated.length) {
