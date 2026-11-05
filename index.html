@@ -25,7 +25,7 @@
 <section class="card"><div class="section-title"><div><div class="num">02 / BUILD A QUIZ</div><h3>Practice setup</h3></div><span>⚙️</span></div><p class="sub">Choose a subject, question count, and time limit.</p>
 <div class="field"><label for="subject">SUBJECT</label><select id="subject"><option>General</option><option>Physics</option><option>Mathematics</option><option>Computer Science</option><option>Programming</option><option>Web Development</option><option>Biology</option><option>Chemistry</option><option>English</option><option>Statistics</option><option>Business</option><option>Other</option></select></div>
 <div class="field"><label for="chapter">CHAPTER / TOPIC NAME (OPTIONAL)</label><input id="chapter" placeholder="e.g. Newton's laws, Cell structure"></div>
-<div class="fields2"><div class="field"><label for="count">NUMBER OF MCQS</label><select id="count"><option>5</option><option>10</option><option>15</option><option>20</option><option>25</option></select></div><div class="field"><label for="minutes">TIMER (MINUTES)</label><select id="minutes"><option value="0">No timer</option><option value="5">5 minutes</option><option value="10" selected>10 minutes</option><option value="15">15 minutes</option><option value="20">20 minutes</option><option value="30">30 minutes</option><option value="45">45 minutes</option><option value="60">60 minutes</option></select></div></div>
+<div class="fields2"><div class="field"><label for="count">NUMBER OF MCQS</label><select id="count"><option value="5">5 questions</option><option value="10" selected>10 questions</option><option value="15">15 questions</option><option value="20">20 questions</option></select></div><div class="field"><label for="minutes">TIMER (MINUTES)</label><select id="minutes"><option value="0">No timer</option><option value="5">5 minutes</option><option value="10" selected>10 minutes</option><option value="15">15 minutes</option><option value="20">20 minutes</option><option value="30">30 minutes</option><option value="45">45 minutes</option><option value="60">60 minutes</option></select></div></div>
 <div class="field"><label for="difficulty">PRACTICE STYLE</label><select id="difficulty"><option value="mixed">Mixed practice</option><option value="basic">Concept check</option><option value="challenge">Challenge (more detailed)</option></select></div>
 <button class="btn primary" id="generateBtn" style="width:100%">✦ Generate MCQs</button>
 <div class="status" id="buildStatus" role="status">Upload a PDF first, then generate questions.</div>
@@ -125,6 +125,7 @@ const QUIZ_SCHEMA = JSON.stringify({
   properties: {
     questions: {
       type: 'array',
+      maxItems: 10,
       items: {
         type: 'object',
         properties: {
@@ -181,7 +182,7 @@ async function generateQuestions() {
   $('generateBtn').textContent = '✦ Generating MCQs…';
   $('buildStatus').textContent = 'Loading the on-device AI…';
   try {
-    const {generateQuiz} = await import('./quiz-engine.mjs?v=2');
+    const {generateQuiz} = await import('./quiz-engine.mjs?v=3');
     const generator = await getLocalGenerator();
     if (!generator) return;
     const generated = await generateQuiz({
