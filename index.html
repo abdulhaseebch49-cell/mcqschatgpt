@@ -20,7 +20,7 @@
 <section class="card"><div class="section-title"><div><div class="num">01 / YOUR MATERIAL</div><h3>Upload study files</h3></div><span class="pill">PDF</span></div><p class="sub">Add lecture slides, notes, or chapter PDFs. Text-based PDFs work best.</p>
 <div class="drop" id="drop"><div class="fileicon">📄</div><strong>Drop PDF files here</strong><p>or choose files from your device · multiple PDFs supported</p><button class="btn secondary" id="chooseBtn" type="button">Choose PDF files</button><input id="pdfInput" type="file" accept="application/pdf,.pdf" multiple hidden></div>
 <div class="filelist" id="fileList"></div><div class="status" id="extractStatus" aria-live="polite">PDF text is extracted in your browser. Files are not uploaded to a server.</div>
-<div class="notice">🔒 Your PDF and its text stay in this browser. AI runs on your device; the model downloads the first time (about 483 MB with a graphics card; more in CPU mode) and is cached by your browser. No account or API key is needed. Progress stays in this browser.</div>
+<div class="notice">🔒 Your PDFs and quiz history stay in this browser. The first quiz downloads the on-device AI model (over 1 GB, depending on your device). It requires a WebGPU-capable browser and can be cached for later quizzes. No account or API key is needed.</div>
 </section>
 <section class="card"><div class="section-title"><div><div class="num">02 / BUILD A QUIZ</div><h3>Practice setup</h3></div><span>⚙️</span></div><p class="sub">Choose a subject, question count, and time limit.</p>
 <div class="field"><label for="subject">SUBJECT</label><select id="subject"><option>General</option><option>Physics</option><option>Mathematics</option><option>Computer Science</option><option>Programming</option><option>Web Development</option><option>Biology</option><option>Chemistry</option><option>English</option><option>Statistics</option><option>Business</option><option>Other</option></select></div>
@@ -28,7 +28,7 @@
 <div class="fields2"><div class="field"><label for="count">NUMBER OF MCQS</label><select id="count"><option>5</option><option>10</option><option>15</option><option>20</option><option>25</option></select></div><div class="field"><label for="minutes">TIMER (MINUTES)</label><select id="minutes"><option value="0">No timer</option><option value="5">5 minutes</option><option value="10" selected>10 minutes</option><option value="15">15 minutes</option><option value="20">20 minutes</option><option value="30">30 minutes</option><option value="45">45 minutes</option><option value="60">60 minutes</option></select></div></div>
 <div class="field"><label for="difficulty">PRACTICE STYLE</label><select id="difficulty"><option value="mixed">Mixed practice</option><option value="basic">Concept check</option><option value="challenge">Challenge (more detailed)</option></select></div>
 <button class="btn primary" id="generateBtn" style="width:100%">✦ Generate MCQs</button>
-<div class="status" id="buildStatus">Upload a PDF first, then generate questions.</div>
+<div class="status" id="buildStatus" role="status">Upload a PDF first, then generate questions.</div>
 <p class="mini">Tip: if your PDF is scanned as pictures, text extraction may find little or nothing. Use an OCR/text PDF for best results.</p>
 </section>
 <section class="card wide hidden" id="quizCard"><div class="quiztop"><div><div class="num">03 / FOCUS MODE</div><h3 id="quizHeading">Practice quiz</h3></div><div class="timer" id="timer">10:00</div></div><div class="progress"><span id="quizProgress"></span></div><div class="quiztop" style="margin-top:10px"><span class="mini" id="qCount">Question 1 of 5</span><span class="mini" id="answeredCount">0 answered</span></div><div id="questionArea"></div><div class="quiznav"><button class="btn secondary" id="prevBtn">← Previous</button><div class="row"><button class="btn secondary" id="nextBtn">Next →</button><button class="btn primary" id="submitBtn">Finish quiz</button></div></div></section>
@@ -38,105 +38,210 @@
 </div><div class="footer">PrepPilot · Free browser-based study tool · Your records are saved locally on this device</div></div>
 <div id="toast" class="toast hidden" role="status"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script>
+<script type="module">
 (() => {
 'use strict';
 const $ = id => document.getElementById(id);
 const DB_KEY='preppilot_history_v1', GOAL_KEY='preppilot_goal_v1';
-let documents=[], allText='', questions=[], answers={}, current=0, quizStarted=0, timerId=null, remaining=0, activeQuiz=null, showingReview=false, lastResult=null, localGenerator=null, generatorPromise=null;
+let documents=[], questions=[], answers={}, current=0, timerId=null, remaining=0, activeQuiz=null, showingReview=false, lastResult=null;
+let busy=false, localGenerator;
 const esc = s => String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function toast(msg){$('toast').textContent=msg;$('toast').classList.remove('hidden');setTimeout(()=>$('toast').classList.add('hidden'),2800)}
 function setStatus(msg){$('extractStatus').textContent=msg}
 if(window.pdfjsLib){pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'}
 function loadHistory(){try{return JSON.parse(localStorage.getItem(DB_KEY)||'[]')}catch(e){return []}}
 function saveHistory(h){try{localStorage.setItem(DB_KEY,JSON.stringify(h))}catch(e){toast('Browser storage is full. Export your report and clear old history.')} }
-function drawFileList(){ $('fileList').innerHTML=documents.map((d,i)=>`<div class="fileitem"><span class="pdf">📕</span><div class="fname"><b>${esc(d.name)}</b><small>${d.pages} pages · ${d.words.toLocaleString()} words</small></div><button class="btn ghost" data-remove="${i}" aria-label="Remove ${esc(d.name)}">✕</button></div>`).join('');$('fileList').querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>{documents.splice(+b.dataset.remove,1);allText=documents.map(d=>d.text).join('\n\n');drawFileList();setStatus(documents.length?'Removed file. Remaining text is ready.':'No PDF loaded.');$('buildStatus').textContent=documents.length?'Ready to build a quiz.':'Upload a PDF first, then generate questions.'})}
-async function readPdf(file){
- if(!window.pdfjsLib)throw new Error('PDF reader library did not load. Check your internet connection and refresh the page.');
- const data=await file.arrayBuffer(); const pdf=await pdfjsLib.getDocument({data}).promise; let text='';
- for(let p=1;p<=pdf.numPages;p++){const page=await pdf.getPage(p);const content=await page.getTextContent();text+=content.items.map(x=>x.str).join(' ')+'\n';if(p%5===0)setStatus(`Reading ${file.name}: page ${p} of ${pdf.numPages}…`)}
- const words=(text.match(/[A-Za-z0-9][A-Za-z0-9'-]*/g)||[]).length;
- if(words<20)throw new Error('Very little selectable text found. This may be a scanned PDF; use OCR or a text-based PDF.');
- return {name:file.name,pages:pdf.numPages,text,words};
+function drawFileList(){ $('fileList').innerHTML=documents.map((d,i)=>`<div class="fileitem"><span class="pdf">📕</span><div class="fname"><b>${esc(d.name)}</b><small>${d.pages} pages · ${d.words.toLocaleString()} words</small></div><button class="btn ghost" data-remove="${i}" aria-label="Remove ${esc(d.name)}">✕</button></div>`).join('');$('fileList').querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>{if(busy)return;documents.splice(+b.dataset.remove,1);drawFileList();setStatus(documents.length?'Removed file. Remaining text is ready.':'No PDF loaded.');$('buildStatus').textContent=documents.length?'Ready to build a quiz.':'Upload a PDF first, then generate questions.'})}
+function setBusy(value) {
+  busy = value;
+  for (const id of ['generateBtn', 'chooseBtn', 'pdfInput']) $(id).disabled = value;
+  for (const button of $('fileList').querySelectorAll('[data-remove]')) button.disabled = value;
 }
-async function addFiles(files){const pdfs=[...files].filter(f=>f.type==='application/pdf'||f.name.toLowerCase().endsWith('.pdf'));if(!pdfs.length){toast('Please choose PDF files.');return}
- for(const file of pdfs){try{setStatus(`Reading ${file.name}…`);const d=await readPdf(file);documents.push(d);allText=documents.map(x=>x.text).join('\n\n');drawFileList();setStatus(`Loaded ${documents.length} PDF(s) · ${allText.split(/\s+/).filter(Boolean).length.toLocaleString()} words extracted.`)}catch(e){setStatus(e.message);toast(e.message)}}
- $('buildStatus').textContent=allText?'Ready to build a quiz from your material.':'Upload a PDF first.'}
-$('chooseBtn').onclick=()=>$('pdfInput').click();$('pdfInput').addEventListener('change',e=>{addFiles(e.target.files);e.target.value=''});
-const drop=$('drop');['dragenter','dragover'].forEach(n=>drop.addEventListener(n,e=>{e.preventDefault();drop.classList.add('drag')}));['dragleave','drop'].forEach(n=>drop.addEventListener(n,e=>{e.preventDefault();drop.classList.remove('drag')}));drop.addEventListener('drop',e=>addFiles(e.dataTransfer.files));
-function cleanText(s){return s.replace(/\s+/g,' ').replace(/\u00a0/g,' ').trim()}
-function splitSentences(text){return cleanText(text).replace(/([.!?])\s+(?=[A-Z0-9])/g,'$1|').split('|').map(s=>s.trim()).filter(s=>s.length>=45&&s.length<=350&&/[A-Za-z]{3,}/.test(s))}
-const stop=new Set(('the and for are was were this that with from have has had into than then them they their there about which while where when what who how why also such these those been being can could should would may might will shall not but you your use used using each other more most some many much very only over under between within through because example examples figure table chapter section introduction conclusion following based known called refers means defined definition important however therefore equation result results value values number numbers one two three first second page slide lecture according given find determine calculate show shown figure note notes all any its it as is of to in on at by an an or if be do does did we our').split(/\s+/));
-function keywordList(text){const freq={};for(const w of (text.toLowerCase().match(/[a-z][a-z'-]{3,}/g)||[])){if(stop.has(w)||/^(http|www)/.test(w))continue;freq[w]=(freq[w]||0)+1}return Object.entries(freq).sort((a,b)=>b[1]-a[1]).map(x=>x[0])}
-function topicFor(sentence, fallback){const kws=keywordList(sentence);const chosen=kws.filter(w=>w.length>4).slice(0,2);return chosen.length?chosen.map(w=>w[0].toUpperCase()+w.slice(1)).join(' / '):fallback}
-function makeQuestion(sentence,idx,allSentences,mode,subject,chapter){
- let s=sentence.replace(/\[[^\]]*\]/g,' ').trim(); const topic=chapter.trim()||topicFor(s,subject==='General'?'Core concepts':subject);
- let answer='',prompt='',replaced=false;
- // Prefer explicit definition patterns; blank a meaningful term/phrase, keeping source context.
- const patterns=[
-  /\b([A-Z][a-z]+(?:\s+[a-zA-Z-]+){0,2})\s+(?:is defined as|is known as|refers to|is called)\s+/,
-  /\b(is defined as|is known as|refers to|is called)\s+([a-zA-Z][a-zA-Z-]*(?:\s+[a-zA-Z][a-zA-Z-]*){0,2})/i,
-  /\b(consists of|is responsible for|is used for|is the process of|is the study of)\s+([^,.]{4,55})/i
- ];
- for(const re of patterns){const m=s.match(re);if(m){let target=m[2]||m[1];if(m[1]&&/defined as|known as|refers to|is called/i.test(m[1]))target=m[2];if(m[2]&&/defined as|known as|refers to|is called/i.test(m[2]))target=m[1];if(target&&target.length>3&&target.length<65){answer=target.trim();const at=s.indexOf(answer);if(at>=0){prompt=s.slice(0,at)+'_____ '+s.slice(at+answer.length);replaced=true;break}}}}
- if(!replaced){
-   const candidates=[...s.matchAll(/\b(?:[A-Z][a-z]{3,}|[a-zA-Z]{6,})\b/g)].map(m=>({word:m[0],i:m.index})).filter(x=>!stop.has(x.word.toLowerCase())&&!/^(chapter|figure|table|therefore|however|following|according)$/i.test(x.word));
-   if(candidates.length){let cand=candidates.filter(x=>x.word.length>=5);if(!cand.length)cand=candidates;const c=cand[(idx*7+Math.floor(cand.length/2))%cand.length];answer=c.word;prompt=s.slice(0,c.i)+'_____ '+s.slice(c.i+c.word.length);replaced=true}
- }
- if(!replaced)return null;
- // Build plausible distractors from other document words with similar length; disclose this is generated from source vocabulary.
- const pool=[...new Set((allSentences.join(' ').match(/[A-Za-z][A-Za-z'-]{3,}/g)||[]).map(w=>w.replace(/^[A-Z]/,c=>c.toLowerCase())).filter(w=>!stop.has(w.toLowerCase())&&w.toLowerCase()!==answer.toLowerCase()&&Math.abs(w.length-answer.length)<=Math.max(5,answer.length)))];
- let distractors=[];for(let j=0;j<pool.length&&distractors.length<3;j++){const w=pool[(idx*11+j*13)%pool.length];if(!distractors.some(x=>x.toLowerCase()===w.toLowerCase()))distractors.push(w)}
- const fallbackWords=['concept','process','system','method','structure','function','property','variable','model','principle'];for(const w of fallbackWords){if(distractors.length>=3)break;if(w.toLowerCase()!==answer.toLowerCase()&&!distractors.includes(w))distractors.push(w)}
- const choices=[answer,...distractors.slice(0,3)];for(let i=choices.length-1;i>0;i--){const j=(idx*17+i*7)% (i+1);[choices[i],choices[j]]=[choices[j],choices[i]]}
- return {id:`q${idx}-${Math.random().toString(36).slice(2,7)}`,prompt:prompt.replace(/\s+/g,' ').trim(),choices,correct:choices.findIndex(c=>c.toLowerCase()===answer.toLowerCase()),answer,topic,source:s,subject,explanation:`Source concept: ${s}`,hint:`Topic: ${topic}. This question is based on a sentence in your uploaded PDF. Re-read the source sentence to verify the concept.`}
+
+async function readPdf(file) {
+  if (!window.pdfjsLib) throw new Error('The PDF reader did not load. Check your connection and refresh the page.');
+  const data = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data, isEvalSupported: false}).promise;
+  const contentPages = [];
+  try {
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+      const page = await pdf.getPage(pageNumber);
+      const content = await page.getTextContent();
+      const text = content.items.map(item => item.str ? item.str + (item.hasEOL ? '\n' : ' ') : '').join('').trim();
+      if (text) contentPages.push({name: file.name, page: pageNumber, text});
+      if (pageNumber % 5 === 0) setStatus(`Reading ${file.name}: page ${pageNumber} of ${pdf.numPages}…`);
+    }
+    const words = contentPages.reduce((total, page) => total + (page.text.match(/[\p{L}\p{N}]+/gu)?.length || 0), 0);
+    if (words < 20) throw new Error('Very little selectable text found. Run OCR on scanned pages or use a text-based PDF.');
+    return {name: file.name, pages: pdf.numPages, contentPages, words};
+  } finally {
+    await pdf.destroy();
+  }
 }
-async function getLocalGenerator(){
- if(localGenerator)return localGenerator;if(generatorPromise)return generatorPromise;
- generatorPromise=(async()=>{const {pipeline,env}=await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/+esm');env.allowLocalModels=false;const device=navigator.gpu?'webgpu':'wasm';localGenerator=await pipeline('text-generation','onnx-community/Qwen2.5-0.5B-Instruct',{device,dtype:device==='webgpu'?'q4f16':'q4',progress_callback:p=>{if(p.status==='progress'&&p.total){const pct=Math.round(p.loaded/p.total*100);$('buildStatus').textContent=`Downloading the free AI model: ${pct}% · this is a one-time download on this browser.`}else if(p.status==='ready')$('buildStatus').textContent='AI model ready. Reading your notes and writing questions…'}});return localGenerator})().catch(err=>{generatorPromise=null;throw err});return generatorPromise;
+
+async function addFiles(files) {
+  if (busy) return;
+  const pdfs = [...files].filter(file => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'));
+  if (!pdfs.length) {
+    toast('Please choose PDF files.');
+    return;
+  }
+  setBusy(true);
+  try {
+    for (const file of pdfs) {
+      try {
+        setStatus(`Reading ${file.name}…`);
+        documents.push(await readPdf(file));
+        drawFileList();
+        setStatus(`Loaded ${documents.length} PDF(s) · ${documents.reduce((n, doc) => n + doc.words, 0).toLocaleString()} words extracted.`);
+      } catch (error) {
+        setStatus(error.message);
+        toast(error.message);
+      }
+    }
+    $('buildStatus').textContent = documents.length ? 'Ready to build a quiz from your material.' : 'Upload a readable PDF first.';
+  } finally {
+    setBusy(false);
+  }
 }
-function parseQuestionJson(raw){const clean=raw.replace(/```(?:json)?/gi,'').trim();const start=clean.indexOf('{'),end=clean.lastIndexOf('}');if(start<0||end<start)throw new Error('The on-device model did not return a readable question list.');return JSON.parse(clean.slice(start,end+1))}
-async function generateAIQuestions(subject,chapter,mode,count){
- const generator=await getLocalGenerator();$('buildStatus').textContent='AI is creating questions on your device…';
- const material=allText.replace(/\s+/g,' ').slice(0,4200);
- const system=`You are a careful exam question writer. Use ONLY the supplied study notes as your source. Return valid JSON only: {"questions":[{"question":"...","choices":["...","...","...","..."],"correct":0,"topic":"...","hint":"...","explanation":"...","source":"..."}]}. Make exactly ${count} distinct multiple-choice questions for ${subject}; topic ${chapter||'infer from notes'}; style ${mode}. Test understanding and application, not page numbers or random word blanks. Four plausible choices and exactly one correct answer. Explain why it is correct and cite a short source excerpt. For Physics/Math, create numerical variants with changed values only when you can recalculate the answer; include formula, substitution and units, and check the answer. If uncertain, ask a conceptual question instead of inventing a calculation.`;
- const out=await generator([{role:'system',content:system},{role:'user',content:`Study notes:\n${material}`}],{max_new_tokens:Math.min(1500,Math.max(500,count*100)),do_sample:false});
- const raw=out?.[0]?.generated_text?.at(-1)?.content;if(typeof raw!=='string')throw new Error('AI returned no text.');
- const data=parseQuestionJson(raw);if(!Array.isArray(data.questions))throw new Error('AI returned no MCQs.');
- const built=data.questions.filter(q=>typeof q.question==='string'&&Array.isArray(q.choices)&&q.choices.length===4&&Number.isInteger(q.correct)&&q.correct>=0&&q.correct<4).slice(0,count).map((q,i)=>({id:`ai-${Date.now()}-${i}`,prompt:q.question,choices:q.choices.map(String),correct:q.correct,answer:String(q.choices[q.correct]),topic:String(q.topic||chapter||subject),hint:String(q.hint||'Think about the concept described in your notes.'),explanation:String(q.explanation||''),source:String(q.source||'Generated from the uploaded notes.'),subject}));
- if(!built.length)throw new Error('AI could not create a valid set. Try a shorter PDF or fewer questions.');return built;
+$('chooseBtn').onclick = () => $('pdfInput').click();
+$('pdfInput').addEventListener('change', event => {
+  addFiles(event.target.files);
+  event.target.value = '';
+});
+const drop = $('drop');
+['dragenter', 'dragover'].forEach(name => drop.addEventListener(name, event => {
+  event.preventDefault();
+  drop.classList.add('drag');
+}));
+['dragleave', 'drop'].forEach(name => drop.addEventListener(name, event => {
+  event.preventDefault();
+  drop.classList.remove('drag');
+}));
+drop.addEventListener('drop', event => addFiles(event.dataTransfer.files));
+
+const QUESTION_SCHEMA = JSON.stringify({
+  type: 'object',
+  properties: {
+    question: {type: 'string'},
+    explanation: {type: 'string'},
+    answer: {type: 'string'},
+    distractors: {type: 'array', items: {type: 'string'}, minItems: 3, maxItems: 3},
+    source: {type: 'integer'},
+    topic: {type: 'string'}
+  },
+  required: ['question', 'answer', 'distractors', 'explanation', 'source', 'topic'],
+  additionalProperties: false
+});
+
+const REVIEW_SCHEMA = JSON.stringify({
+  type: 'object',
+  properties: {explanation: {type: 'string'}, answer: {type: 'string'}},
+  required: ['explanation', 'answer'],
+  additionalProperties: false
+});
+
+async function getLocalGenerator() {
+  if (localGenerator) return localGenerator;
+  const adapter = await navigator.gpu?.requestAdapter().catch(() => null);
+  if (!adapter) {
+    $('buildStatus').textContent = 'AI needs WebGPU. Open this site in a recent browser with hardware acceleration enabled.';
+    return null;
+  }
+  const {CreateMLCEngine} = await import('https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.87/+esm');
+  const precision = adapter.features.has('shader-f16') ? 'q4f16' : 'q4f32';
+  $('buildStatus').textContent = 'Preparing the on-device AI. The first download can take a while…';
+  let highestProgress = 0;
+  localGenerator = await CreateMLCEngine(`Qwen3.5-2B-${precision}_1-MLC`, {
+    initProgressCallback(report) {
+      highestProgress = Math.max(highestProgress, report.progress);
+      $('buildStatus').textContent = highestProgress >= 1
+        ? 'Starting the AI model…'
+        : `Loading the AI model · ${Math.floor(100 * highestProgress)}%`;
+    }
+  });
+  return localGenerator;
 }
-async function generateQuestions(){
- if(!allText.trim()){toast('Upload a readable PDF before generating MCQs.');return}
- const subject=$('subject').value,chapter=$('chapter').value,mode=$('difficulty').value,count=+$('count').value;
- const button=$('generateBtn');button.disabled=true;button.textContent='✦ Loading on-device AI…';
- try{questions=await generateAIQuestions(subject,chapter,mode,count);beginQuiz(subject,chapter,questions.length);return}
- catch(error){$('buildStatus').textContent=`On-device AI is unavailable here (${error.message}). Using the basic local question builder.`;toast('This browser could not run the AI model. Starting basic practice instead.')}
- finally{button.disabled=false;button.textContent='✦ Generate MCQs'}
- const sentences=splitSentences(allText);
- if(sentences.length<3){toast('Not enough readable sentences. Try a text-based PDF with more content.');return}
- const pool=sentences.map((s,i)=>({s,i,score:(s.match(/[A-Za-z]{5,}/g)||[]).length+(s.includes(':')?2:0)+(s.includes(' is ')?1:0)})).sort((a,b)=>b.score-a.score);
- // Spread selected sentences across the document to avoid only using the opening pages.
- const selected=[], seen=new Set();let stride=Math.max(1,Math.floor(pool.length/Math.min(count*3,pool.length)));
- for(let i=0;i<pool.length&&selected.length<count*5;i++){const x=pool[(i*stride+Math.floor(i/Math.max(1,Math.floor(pool.length/(count+1)))))%pool.length];if(!seen.has(x.s)){seen.add(x.s);selected.push(x.s)}}
- const built=[];for(let i=0;i<selected.length&&built.length<count;i++){const q=makeQuestion(selected[i],i,sentences,mode,subject,chapter);if(q&&!built.some(old=>old.answer.toLowerCase()===q.answer.toLowerCase()&&old.source===q.source))built.push(q)}
- if(built.length<count){for(const s of sentences){if(built.length>=count)break;const q=makeQuestion(s,built.length,sentences,mode,subject,chapter);if(q&&!built.some(old=>old.source===q.source))built.push(q)}}
- if(!built.length){toast('Could not build questions from this PDF. Try another PDF with more selectable text.');return}
- questions=built.slice(0,count);beginQuiz(subject,chapter,questions.length);
+
+async function generateQuestions() {
+  if (busy) return;
+  if (!documents.length) {
+    toast('Upload a readable PDF before generating MCQs.');
+    return;
+  }
+  const subject = $('subject').value;
+  const chapter = $('chapter').value.trim();
+  const mode = $('difficulty').value;
+  const count = Number($('count').value);
+  const minutes = Number($('minutes').value);
+  setBusy(true);
+  $('generateBtn').textContent = '✦ Generating MCQs…';
+  $('buildStatus').textContent = 'Loading the on-device AI…';
+  try {
+    const {generateQuiz} = await import('./quiz-engine.mjs');
+    const generator = await getLocalGenerator();
+    if (!generator) return;
+    const generated = await generateQuiz({
+      pages: documents.flatMap(document => document.contentPages),
+      subject, chapter, mode, count,
+      async complete(messages, maxTokens, purpose) {
+        const result = await generator.chat.completions.create({
+          messages,
+          max_tokens: maxTokens,
+          temperature: 0,
+          enable_thinking: false,
+          response_format: {type: 'json_object', schema: purpose === 'review' ? REVIEW_SCHEMA : QUESTION_SCHEMA}
+        });
+        const text = result.choices[0]?.message.content;
+        if (typeof text !== 'string') throw new Error('The model returned no text.');
+        return text;
+      },
+      onProgress({completed, requested}) {
+        $('buildStatus').textContent = `Writing and checking MCQs · ${completed}/${requested} ready…`;
+      }
+    });
+    if (!generated.length) {
+      $('buildStatus').textContent = 'AI could not build questions with matching PDF evidence. Try clearer notes or a more specific topic.';
+      return;
+    }
+    questions = generated.map((question, index) => ({...question, id: `ai-${index}`}));
+    beginQuiz(subject, chapter, minutes);
+    $('buildStatus').textContent = generated.length < count
+      ? `AI created ${generated.length} of ${count} requested MCQs with matching PDF excerpts. Add more material for a longer quiz.`
+      : `AI created ${generated.length} MCQs. Open answer review to see explanations and PDF sources.`;
+  } catch (error) {
+    console.error('PrepPilot AI generation failed', error);
+    $('buildStatus').textContent = 'AI generation failed. Check your connection and available memory, then reload the page and try again.';
+  } finally {
+    setBusy(false);
+    $('generateBtn').textContent = '✦ Generate MCQs';
+  }
 }
-function beginQuiz(subject,chapter,n){answers={};current=0;showingReview=false;activeQuiz={subject,chapter:chapter||'PDF topics',count:n,minutes:+$('minutes').value,started:new Date().toISOString()};$('quizHeading').textContent=`${subject} · ${activeQuiz.chapter}`;$('quizCard').classList.remove('hidden');$('resultCard').classList.add('hidden');if(questions[0]?.id?.startsWith('ai-'))$('buildStatus').textContent=`AI created ${n} questions on your device. Review answers and calculations as you practice.`;else $('buildStatus').textContent=`Created ${n} basic practice questions.`;$('quizCard').scrollIntoView({behavior:'smooth',block:'start'});startTimer(activeQuiz.minutes);renderQuestion()}
-$('generateBtn').onclick=generateQuestions;
+
+function beginQuiz(subject, chapter, minutes) {
+  answers = {};
+  current = 0;
+  showingReview = false;
+  activeQuiz = {subject, chapter: chapter || 'PDF topics', count: questions.length, minutes, started: new Date().toISOString()};
+  $('quizHeading').textContent = `${subject} · ${activeQuiz.chapter}`;
+  $('quizCard').classList.remove('hidden');
+  $('resultCard').classList.add('hidden');
+  $('quizCard').scrollIntoView({behavior: 'smooth', block: 'start'});
+  startTimer(minutes);
+  renderQuestion();
+}
+$('generateBtn').onclick = generateQuestions;
 function startTimer(mins){clearInterval(timerId);remaining=mins*60;updateTimer();if(!mins){$('timer').textContent='No timer';return}timerId=setInterval(()=>{remaining--;updateTimer();if(remaining<=0){clearInterval(timerId);timerId=null;toast('Time is up — submitting your quiz.');finishQuiz(true)}},1000)}
 function updateTimer(){if(!$('timer'))return;if(remaining<=0&&activeQuiz?.minutes){$('timer').textContent='00:00';$('timer').style.color='var(--red)';return}$('timer').style.color=remaining<60?'var(--red)':'var(--amber)';$('timer').textContent=`${String(Math.floor(remaining/60)).padStart(2,'0')}:${String(remaining%60).padStart(2,'0')}`}
 function renderQuestion(){
  const q=questions[current];if(!q)return;$('qCount').textContent=`Question ${current+1} of ${questions.length}`;$('answeredCount').textContent=`${Object.keys(answers).length} answered`;$('quizProgress').style.width=`${(current+1)/questions.length*100}%`;
- $('questionArea').innerHTML=`<div class="qmeta">${esc(activeQuiz.subject)} · Topic: ${esc(q.topic)}</div><div class="question">${esc(q.prompt)}</div><div class="options">${q.choices.map((c,i)=>{let cls='option';if(answers[q.id]===i)cls+=' selected';if(showingReview){if(i===q.correct)cls+=' correct';else if(answers[q.id]===i)cls+=' wrong'}return `<button class="${cls}" data-choice="${i}" ${showingReview?'disabled':''}><span class="letter">${'ABCD'[i]}</span><span>${esc(c)}</span></button>`}).join('')}</div><div class="hint">💡 <b>Hint:</b> ${esc(q.hint)}</div>${showingReview?`<div class="feedback"><b>Correct answer:</b> ${esc(q.answer)}<br><b>Explanation:</b> ${esc(q.explanation||'') }<br><b>Source sentence:</b> ${esc(q.source)}</div>`:''}`;
+ $('questionArea').innerHTML=`<div class="qmeta">${esc(activeQuiz.subject)} · Topic: ${esc(q.topic)}</div><div class="question">${esc(q.prompt)}</div><div class="options">${q.choices.map((c,i)=>{let cls='option';if(answers[q.id]===i)cls+=' selected';if(showingReview){if(i===q.correct)cls+=' correct';else if(answers[q.id]===i)cls+=' wrong'}return `<button class="${cls}" data-choice="${i}" ${showingReview?'disabled':''}><span class="letter">${'ABCD'[i]}</span><span>${esc(c)}</span></button>`}).join('')}</div><div class="hint">💡 <b>Hint:</b> ${esc(q.hint)}</div>${showingReview?`<div class="feedback"><b>Correct answer:</b> ${esc(q.answer)}<br><b>Explanation:</b> ${esc(q.explanation||'') }<br><b>PDF source:</b> ${esc(q.source)}</div>`:''}`;
  $('questionArea').querySelectorAll('[data-choice]').forEach(b=>b.onclick=()=>{answers[q.id]=+b.dataset.choice;renderQuestion()});
  $('prevBtn').disabled=current===0;$('nextBtn').disabled=current===questions.length-1;$('submitBtn').textContent=showingReview?'Back to report':'Finish quiz';
 }
 $('prevBtn').onclick=()=>{if(current>0){current--;renderQuestion()}};$('nextBtn').onclick=()=>{if(current<questions.length-1){current++;renderQuestion()}};
 $('submitBtn').onclick=()=>{if(showingReview){$('resultCard').classList.remove('hidden');$('quizCard').classList.add('hidden');return}if(Object.keys(answers).length<questions.length&&!confirm(`You have answered ${Object.keys(answers).length} of ${questions.length}. Finish anyway?`))return;finishQuiz(false)};
-function finishQuiz(timeUp){if(!activeQuiz||!questions.length)return;clearInterval(timerId);timerId=null;const correct=questions.filter(q=>answers[q.id]===q.correct).length;const result={id:Date.now(),date:new Date().toISOString(),subject:activeQuiz.subject,chapter:activeQuiz.chapter,total:questions.length,correct,score:Math.round(correct/questions.length*100),answers:Object.keys(answers).length,topics:{},wrongTopics:[],timeUp,questions:questions.map(q=>({topic:q.topic,correct:answers[q.id]===q.correct,answer:q.answer,selected:answers[q.id]===undefined?null:q.choices[answers[q.id]],source:q.source}))};result.questions.forEach(q=>{if(!result.topics[q.topic])result.topics[q.topic]={total:0,correct:0};result.topics[q.topic].total++;if(q.correct)result.topics[q.topic].correct++});result.wrongTopics=Object.entries(result.topics).filter(([k,v])=>v.correct<v.total).sort((a,b)=>(a[1].correct/a[1].total)-(b[1].correct/b[1].total)).map(([topic,v])=>({topic,correct:v.correct,total:v.total,percent:Math.round(v.correct/v.total*100)}));lastResult=result;const history=loadHistory();history.push(result);saveHistory(history.slice(-100));showResult(result);showingReview=false;$('quizCard').classList.add('hidden');$('resultCard').classList.remove('hidden');renderDashboard();$('resultCard').scrollIntoView({behavior:'smooth',block:'start'});if(timeUp)toast('Quiz submitted because the timer ended.')}
+function finishQuiz(timeUp){if(!activeQuiz||!questions.length)return;clearInterval(timerId);timerId=null;const correct=questions.filter(q=>answers[q.id]===q.correct).length;const result={id:Date.now(),date:new Date().toISOString(),subject:activeQuiz.subject,chapter:activeQuiz.chapter,total:questions.length,correct,score:Math.round(correct/questions.length*100),answers:Object.keys(answers).length,topics:Object.create(null),wrongTopics:[],timeUp,questions:questions.map(q=>({topic:q.topic,correct:answers[q.id]===q.correct,answer:q.answer,selected:answers[q.id]===undefined?null:q.choices[answers[q.id]],source:q.source}))};result.questions.forEach(q=>{if(!result.topics[q.topic])result.topics[q.topic]={total:0,correct:0};result.topics[q.topic].total++;if(q.correct)result.topics[q.topic].correct++});result.wrongTopics=Object.entries(result.topics).filter(([k,v])=>v.correct<v.total).sort((a,b)=>(a[1].correct/a[1].total)-(b[1].correct/b[1].total)).map(([topic,v])=>({topic,correct:v.correct,total:v.total,percent:Math.round(v.correct/v.total*100)}));lastResult=result;const history=loadHistory();history.push(result);saveHistory(history.slice(-100));showResult(result);showingReview=false;$('quizCard').classList.add('hidden');$('resultCard').classList.remove('hidden');renderDashboard();$('resultCard').scrollIntoView({behavior:'smooth',block:'start'});if(timeUp)toast('Quiz submitted because the timer ended.')}
 function showResult(r){$('scoreText').textContent=r.score+'%';$('scoreCircle').style.setProperty('--score',r.score+'%');$('resultTitle').textContent=r.score>=85?'Excellent preparation!':r.score>=65?'Good progress — keep going.':'Your next revision plan starts here.';$('resultSummary').textContent=`${r.correct} correct · ${r.total-r.correct} incorrect or unanswered · ${r.subject} · ${new Date(r.date).toLocaleString()}`;$('correctLabel').textContent=`${r.correct} / ${r.total}`;$('resultProgress').style.width=r.score+'%';
  const topics=Object.entries(r.topics||{}).sort((a,b)=>(a[1].correct/a[1].total)-(b[1].correct/b[1].total));$('topicBreakdown').innerHTML=topics.map(([name,v])=>{const pct=Math.round(v.correct/v.total*100);return `<div class="topicrow"><span title="${esc(name)}">${esc(name.length>18?name.slice(0,17)+'…':name)}</span><div class="progress"><span style="width:${pct}%;background:${pct<50?'var(--red)':pct<75?'var(--amber)':'var(--green)'}"></span></div><b>${pct}%</b></div>`}).join('')||'<div class="empty">No topic data available.</div>';
  const weak=(r.wrongTopics||[]);$('revisionList').innerHTML=weak.length?weak.slice(0,5).map(w=>`<div class="resultitem"><b>⚠ ${esc(w.topic)}</b><span>${w.correct}/${w.total} correct · ${w.percent}%</span></div>`).join(''):'<div class="resultitem"><b>🌟 No weak topic detected</b><span>Keep revising to retain it.</span></div>';
